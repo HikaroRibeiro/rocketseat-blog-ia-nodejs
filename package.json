@@ -1,0 +1,19 @@
+{
+  "name": "rocketseat-blog-ia-nodejs",
+  "version": "1.0.0",
+  "description": "API REST para cadastro de postagens e comentários",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env.local index.js",
+    "dev": "node --watch --env-file=.env.local index.js"
+  },
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.67.0",
+    "nanoid": "^6.0.1",
+    "zod": "^4.6.5"
+  }
+}
