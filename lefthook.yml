@@ -1,0 +1,11 @@
+pre-commit:
+  parallel: true
+  jobs:
+    - name: lint-staged
+      run: npx lint-staged
+
+commit-msg:
+  parallel: true
+  jobs:
+    - name: commitlint
+      run: npx commitlint --edit {1}
