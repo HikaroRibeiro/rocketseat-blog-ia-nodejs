@@ -1,4 +1,3 @@
-import http from "node:http";
 import {
   createPost,
   findPostById,
@@ -12,208 +11,102 @@ import {
   listSuggestions,
 } from "./lib/store.js";
 import { generatePostFromIdea } from "./lib/agent.js";
+import { createApp } from "./lib/framework.js";
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
 
-function sendJson(res, status, payload) {
-  const body = JSON.stringify(payload, null, 2);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(body),
-  });
-  res.end(body);
-}
-
-function sendError(res, status, message) {
-  sendJson(res, status, { error: message });
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = "";
-    req.on("data", (chunk) => {
-      raw += chunk;
-      if (raw.length > 1e6) {
-        reject(new Error("Corpo da requisição muito grande"));
-        req.destroy();
-      }
-    });
-    req.on("end", () => {
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(new Error("JSON inválido no corpo da requisição"));
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
 function requireStringField(body, field, res) {
   const value = typeof body[field] === "string" ? body[field].trim() : "";
   if (!value) {
-    sendError(res, 400, `O campo "${field}" é obrigatório`);
+    res.status(400).send({ error: `O campo "${field}" é obrigatório` });
     return null;
   }
   return value;
 }
 
-function notFound(res) {
-  sendError(res, 404, "Rota não encontrada");
-}
+const app = createApp();
 
-function methodNotAllowed(res) {
-  sendError(res, 405, "Método não permitido");
-}
+app.get("/api/health", (req, res) => {
+  return res.send({ status: "ok" });
+});
 
-function createHandler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+app.post("/api/posts", async (req, res) => {
+  const title = requireStringField(req.body, "title", res);
+  if (title === null) return;
+  const content = requireStringField(req.body, "content", res);
+  if (content === null) return;
 
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    return res.end();
-  }
-}
+  const post = createPost({ title, content, author: req.body.author });
+  return res.status(201).send({ post });
+});
 
-async function routePosts(req, res, pathname) {
-  const segments = pathname.split("/").filter(Boolean);
+app.get("/api/posts", (req, res) => {
+  return res.send({ posts: listPosts() });
+});
 
-  if (req.method === "POST" && segments.length === 2) {
-    const body = await readBody(req);
-    const title = requireStringField(body, "title", res);
-    if (title === null) return;
-    const content = requireStringField(body, "content", res);
-    if (content === null) return;
+app.get("/api/posts/:id", (req, res) => {
+  const post = findPostById(req.params.id);
+  if (!post) return res.status(404).send({ error: "Postagem não encontrada" });
+  return res.send({ post });
+});
 
-    const post = createPost({ title, content, author: body.author });
-    return sendJson(res, 201, { post });
-  }
+app.delete("/api/posts/:id", (req, res) => {
+  const post = deletePost(req.params.id);
+  if (!post) return res.status(404).send({ error: "Postagem não encontrada" });
+  return res.send({ post });
+});
 
-  if (req.method === "GET" && segments.length === 2) {
-    return sendJson(res, 200, { posts: listPosts() });
-  }
+app.post("/api/posts/:id/comments", async (req, res) => {
+  const post = findPostById(req.params.id);
+  if (!post) return res.status(404).send({ error: "Postagem não encontrada" });
 
-  if (segments.length === 3) {
-    const post = findPostById(segments[2]);
-    if (!post) return sendError(res, 404, "Postagem não encontrada");
+  const content = requireStringField(req.body, "content", res);
+  if (content === null) return;
 
-    if (req.method === "GET") {
-      return sendJson(res, 200, { post });
-    }
+  const comment = createComment({ postId: post.id, content, author: req.body.author });
+  return res.status(201).send({ comment });
+});
 
-    if (req.method === "DELETE") {
-      deletePost(post.id);
-      return sendJson(res, 200, { post });
-    }
-  }
+app.get("/api/posts/:id/comments", (req, res) => {
+  const post = findPostById(req.params.id);
+  if (!post) return res.status(404).send({ error: "Postagem não encontrada" });
 
-  if (segments.length === 4 && segments[3] === "comments") {
-    const post = findPostById(segments[2]);
-    if (!post) return sendError(res, 404, "Postagem não encontrada");
+  const comments = listCommentsByPost(post.id);
+  return res.send({ comments, total: comments.length });
+});
 
-    if (req.method === "POST") {
-      const body = await readBody(req);
-      const content = requireStringField(body, "content", res);
-      if (content === null) return;
-
-      const comment = createComment({ postId: post.id, content, author: body.author });
-      return sendJson(res, 201, { comment });
-    }
-
-    if (req.method === "GET") {
-      const comments = listCommentsByPost(post.id);
-      return sendJson(res, 200, { comments, total: comments.length });
-    }
-  }
-
-  methodNotAllowed(res);
-}
-
-async function routeComments(req, res, url, pathname) {
-  const segments = pathname.split("/").filter(Boolean);
-
-  if (req.method === "DELETE" && segments.length === 3) {
-    const comment = deleteComment(segments[2]);
-    if (!comment) return sendError(res, 404, "Comentário não encontrado");
-    return sendJson(res, 200, { comment });
-  }
-
-  if (req.method !== "GET") return methodNotAllowed(res);
-
-  const postId = url.searchParams.get("postId");
-  const author = url.searchParams.get("author");
-  const content = url.searchParams.get("content");
-
+app.get("/api/comments", (req, res) => {
+  const { postId, author, content } = req.query;
   const filters = {};
   if (postId) filters.postId = postId;
   if (author) filters.author = author;
   if (content) filters.content = content;
 
   const comments = listComments(filters);
-  return sendJson(res, 200, { comments, total: comments.length });
-}
-
-async function routeSuggestions(req, res) {
-  if (req.method === "POST") {
-    const body = await readBody(req);
-    const idea = requireStringField(body, "idea", res);
-    if (idea === null) return;
-
-    const generated = await generatePostFromIdea(idea);
-    const suggestion = createSuggestion({ title: generated.title, content: generated.content });
-    return sendJson(res, 201, { suggestion });
-  }
-
-  if (req.method === "GET") {
-    return sendJson(res, 200, { suggestions: listSuggestions(), total: listSuggestions().length });
-  }
-
-  methodNotAllowed(res);
-}
-
-async function handler(req, res) {
-  createHandler(req, res);
-
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  const pathname = url.pathname;
-
-  if (pathname === "/api/health") {
-    return sendJson(res, 200, { status: "ok" });
-  }
-
-  if (pathname.startsWith("/api/suggestions")) {
-    return routeSuggestions(req, res);
-  }
-
-  if (pathname.startsWith("/api/comments")) {
-    return routeComments(req, res, url, pathname);
-  }
-
-  if (pathname.startsWith("/api/posts")) {
-    return routePosts(req, res, pathname);
-  }
-
-  notFound(res);
-}
-
-const server = http.createServer((req, res) => {
-  handler(req, res).catch((err) => {
-    if (res.headersSent) {
-      res.end();
-      return;
-    }
-    sendError(
-      res,
-      err.message.includes("JSON inválido") || err.message.includes("grande") ? 400 : 500,
-      err.message,
-    );
-  });
+  return res.send({ comments, total: comments.length });
 });
 
-server.listen(PORT, HOST, () => {
+app.delete("/api/comments/:id", (req, res) => {
+  const comment = deleteComment(req.params.id);
+  if (!comment) return res.status(404).send({ error: "Comentário não encontrado" });
+  return res.send({ comment });
+});
+
+app.post("/api/suggestions", async (req, res) => {
+  const idea = requireStringField(req.body, "idea", res);
+  if (idea === null) return;
+
+  const generated = await generatePostFromIdea(idea);
+  const suggestion = createSuggestion({ title: generated.title, content: generated.content });
+  return res.status(201).send({ suggestion });
+});
+
+app.get("/api/suggestions", (req, res) => {
+  const suggestions = listSuggestions();
+  return res.send({ suggestions, total: suggestions.length });
+});
+
+app.listen(PORT, HOST, () => {
   console.log(`API rodando em http://${HOST}:${PORT}`);
 });
